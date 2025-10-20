@@ -72,6 +72,9 @@
 				bassMultiplier: 0.5,
 				midMultiplier: 0.5,
 				trebleMultiplier: 0.5,
+				cameraMovement: 'orbit',
+				cameraSpeed: 1.0,
+				randomness: 0.5,
 			};
 
 			// Audio
@@ -133,6 +136,11 @@
 				visualFolder.add(effectController, 'bassMultiplier', 0, 2, 0.1);
 				visualFolder.add(effectController, 'midMultiplier', 0, 2, 0.1);
 				visualFolder.add(effectController, 'trebleMultiplier', 0, 2, 0.1);
+
+				const cameraFolder = gui.addFolder('Advanced Camera');
+				cameraFolder.add(effectController, 'cameraMovement', [ 'orbit', 'random', 'still' ] ).name('Movement');
+				cameraFolder.add(effectController, 'cameraSpeed', 0, 5, 0.1).name('Speed');
+				cameraFolder.add(effectController, 'randomness', 0, 1, 0.1).name('Randomness');
 			}
 
 			function init() {
@@ -339,6 +347,23 @@
 				let vertexpos = 0;
 				let colorpos = 0;
 				let numConnected = 0;
+
+				switch(effectController.cameraMovement) {
+					case 'orbit':
+						controls.autoRotate = true;
+						controls.autoRotateSpeed = effectController.cameraSpeed;
+						break;
+					case 'random':
+						controls.autoRotate = false;
+						const time = Date.now() * 0.0001;
+						camera.position.x += Math.sin(time * effectController.cameraSpeed) * effectController.randomness * 10;
+						camera.position.y += Math.cos(time * effectController.cameraSpeed) * effectController.randomness * 10;
+						camera.position.z += Math.cos(time * effectController.cameraSpeed) * effectController.randomness * 10;
+						break;
+					case 'still':
+						controls.autoRotate = false;
+						break;
+				}
 
 				controls.update();
 
