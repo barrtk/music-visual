@@ -1,0 +1,23 @@
+body {
+	background-color: #000;
+	margin: 0px;
+	overflow: hidden;
+	font-family:Monospace;
+	font-size:13px;
+	text-align:center;
+	font-weight: bold;
+	text-align:center;
+}
+
+a {
+	color:#0078ff;
+}
+
+#music-display {
+	position: absolute;
+	bottom: 10px;
+	left: 10px;
+	width: 256px;
+	height: 100px;
+	z-index: 100;
+}
