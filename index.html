@@ -31,33 +31,39 @@
 
 			import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+			import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+			import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+			import { FontLoader } from 'three/addons/loaders/FontLoader.js';
 
-			let group;
+			let group, spaceship, spaceshipHelper, keys = {};
 			let container, stats;
 			const particlesData = [];
-			let camera, scene, renderer, controls, helper;
+			let camera, scene, renderer, controls, helper, textMesh, font;
 			let positions, colors;
 			let particles;
 			let pointCloud;
 			let particlePositions;
 			let linesMesh;
 
+			let textureLoader = new THREE.TextureLoader();
+			let baseColorMap, roughnessMap, emissiveMap, metallicMap, normalMap;
+
 			const maxParticleCount = 1000;
 			let particleCount = 500;
-			const r = 800;
+			const r = 1600;
 			const rHalf = r / 2;
 
 			const effectController = {
 				showDots: true,
 				showLines: true,
-				minDistance: 150,
+				minDistance: 85.55,
 				limitConnections: false,
 				maxConnections: 20,
 				particleCount: 500,
 				particleSize: 3,
 				particleColor: 0xffffff,
-				fillScreen: false,
-				showBox: true,
+				fillScreen: true,
+				showBox: false,
 				openFileDialog: function() { document.getElementById('fileInput').click(); },
 				nextTrack: function() { playNext(); },
 				prevTrack: function() { playPrev(); },
@@ -73,8 +79,20 @@
 				midMultiplier: 0.5,
 				trebleMultiplier: 0.5,
 				cameraMovement: 'orbit',
-				cameraSpeed: 1.0,
+				cameraSpeed: 0.2,
 				randomness: 0.5,
+				colorMode: 'static',
+				bassColor: 0xff0000,
+				midColor: 0x00ff00,
+				trebleColor: 0x0000ff,
+				text: '',
+				trackCamera: false,
+				textAsParticles: false,
+				textColor: 0xffffff,
+				spaceshipSpeed: 1.0,
+				spaceshipSize: 0.005,
+				spaceshipVisible: true,
+				showTestCube: false,
 			};
 
 			// Audio
@@ -123,9 +141,6 @@
 				visualFolder.add(effectController, 'particleSize', 1, 10, 1).onChange(function (value) {
 					pointCloud.material.size = value;
 				});
-				visualFolder.addColor(effectController, 'particleColor').onChange(function (value) {
-					pointCloud.material.color.set(value);
-				});
 				visualFolder.add(effectController, 'fillScreen').onChange(function (value) {
 					// Re-initialize particles
 					initParticles();
@@ -137,10 +152,43 @@
 				visualFolder.add(effectController, 'midMultiplier', 0, 2, 0.1);
 				visualFolder.add(effectController, 'trebleMultiplier', 0, 2, 0.1);
 
+				const colorFolder = gui.addFolder('Colors');
+				colorFolder.add(effectController, 'colorMode', [ 'static', 'bass', 'mid', 'treble' ] ).name('Color Mode');
+				colorFolder.addColor(effectController, 'particleColor').onChange(function (value) {
+					pointCloud.material.color.set(value);
+				});
+				colorFolder.addColor(effectController, 'bassColor');
+				colorFolder.addColor(effectController, 'midColor');
+				colorFolder.addColor(effectController, 'trebleColor');
+
 				const cameraFolder = gui.addFolder('Advanced Camera');
-				cameraFolder.add(effectController, 'cameraMovement', [ 'orbit', 'random', 'still' ] ).name('Movement');
+				cameraFolder.add(effectController, 'cameraMovement', [ 'orbit', 'random', 'still', 'follow', 'flight' ] ).name('Movement');
 				cameraFolder.add(effectController, 'cameraSpeed', 0, 5, 0.1).name('Speed');
 				cameraFolder.add(effectController, 'randomness', 0, 1, 0.1).name('Randomness');
+
+				const textFolder = gui.addFolder('3D Text');
+				textFolder.add(effectController, 'text').name('Text').onChange(createText);
+				textFolder.add(effectController, 'trackCamera').name('Track Camera');
+				textFolder.add(effectController, 'textAsParticles').name('Text as Particles').onChange(createText);
+				textFolder.addColor(effectController, 'textColor').onChange(createText);
+
+				const spaceshipFolder = gui.addFolder('Spaceship');
+				spaceshipFolder.add(effectController, 'spaceshipSpeed', 0, 10, 0.1).name('Speed');
+				spaceshipFolder.add(effectController, 'spaceshipSize', 0.001, 5, 0.001).name('Size').onChange(function (value) {
+					if(spaceship) {
+						spaceship.scale.set(value, value, value);
+					}
+				});
+				spaceshipFolder.add(effectController, 'spaceshipVisible').name('Visible').onChange(function (value) {
+					if(spaceship) {
+						spaceship.visible = value;
+					}
+				});
+				spaceshipFolder.add(effectController, 'showTestCube').name('Show Test Cube').onChange(function (value) {
+					if(testCube) {
+						testCube.visible = value;
+					}
+				});
 			}
 
 			function init() {
@@ -152,11 +200,27 @@
 					45,
 					window.innerWidth / window.innerHeight,
 					1,
-					4000
+					20000
 				);
-				camera.position.z = 1750;
+				camera.position.set(0, 50, 200);
 
 				scene = new THREE.Scene();
+
+				const ambientLight = new THREE.AmbientLight( 0xcccccc, 1.0 ); // Increased intensity
+				scene.add( ambientLight );
+
+				const directionalLight = new THREE.DirectionalLight( 0xffffff, 1.5 ); // Increased intensity
+				directionalLight.position.set( 1, 1, 1 );
+				scene.add( directionalLight );
+
+				const hemisphereLight = new THREE.HemisphereLight( 0xffffbb, 0x080820, 1 ); // Added HemisphereLight
+				scene.add( hemisphereLight );
+
+				// Test Cube
+				const testCube = new THREE.Mesh(new THREE.BoxGeometry(50, 50, 50), new THREE.MeshNormalMaterial());
+				testCube.position.set(0, 0, 0);
+				testCube.visible = effectController.showTestCube;
+				scene.add(testCube);
 
 				group = new THREE.Group();
 				scene.add(group);
@@ -224,6 +288,45 @@
 				linesMesh = new THREE.LineSegments(geometry, material);
 				group.add(linesMesh);
 
+				const loader = new FontLoader();
+				loader.load( 'https://unpkg.com/three@0.138.0/examples/fonts/helvetiker_regular.typeface.json', function ( f ) {
+					font = f;
+					createText();
+				} );
+
+				baseColorMap = textureLoader.load('models/Tri_Fighter_2_Set_1_BaseColor.png', undefined, undefined, function (err) { console.error('Error loading baseColorMap:', err); });
+				roughnessMap = textureLoader.load('models/Tri_Fighter_2_Set_1_Roughness.jpg', undefined, undefined, function (err) { console.error('Error loading roughnessMap:', err); });
+				emissiveMap = textureLoader.load('models/Tri_Fighter_2_Set_1_Emissive.jpg', undefined, undefined, function (err) { console.error('Error loading emissiveMap:', err); });
+				metallicMap = textureLoader.load('models/Tri_Fighter_2_Set_1_Metallic.jpg', undefined, undefined, function (err) { console.error('Error loading metallicMap:', err); });
+				normalMap = textureLoader.load('models/Tri_Fighter_2_Set_1_Normal.jpg', undefined, undefined, function (err) { console.error('Error loading normalMap:', err); }); // Assuming this filename
+
+				const spaceshipMaterial = new THREE.MeshStandardMaterial({
+					map: baseColorMap,
+					roughnessMap: roughnessMap,
+					emissiveMap: emissiveMap,
+					metalnessMap: metallicMap,
+					normalMap: normalMap,
+				});
+
+				const fbxLoader = new FBXLoader();
+				fbxLoader.load('models/statek1.fbx', function (object) {
+					spaceship = object;
+					spaceship.scale.set(effectController.spaceshipSize, effectController.spaceshipSize, effectController.spaceshipSize);
+					spaceship.position.set(0, 0, 0);
+					spaceship.visible = effectController.spaceshipVisible;
+					scene.add(spaceship);
+
+					spaceship.traverse(function (child) {
+						if (child.isMesh) {
+							child.material = spaceshipMaterial;
+						}
+					});
+
+					spaceshipHelper = new THREE.BoxHelper(spaceship, 0xffff00);
+					scene.add(spaceshipHelper);
+					console.log('Spaceship loaded:', spaceship);
+				});
+
 				renderer = new THREE.WebGLRenderer({ antialias: true });
 				renderer.setPixelRatio(window.devicePixelRatio);
 				renderer.setSize(window.innerWidth, window.innerHeight);
@@ -236,6 +339,13 @@
 
 				stats = new Stats();
 				container.appendChild(stats.dom);
+
+				window.addEventListener('keydown', function(event) {
+					keys[event.code] = true;
+				});
+				window.addEventListener('keyup', function(event) {
+					keys[event.code] = false;
+				});
 
 				window.addEventListener('resize', onWindowResize);
 
@@ -267,6 +377,51 @@
 					}
 				});
 
+			}
+
+			function createText() {
+				if(!font) return;
+				if(textMesh) {
+					scene.remove(textMesh);
+				}
+				const textGeo = new TextGeometry( effectController.text, {
+					font: font,
+					size: 50,
+					height: 5,
+					curveSegments: 12,
+					bevelEnabled: true,
+					bevelThickness: 2,
+					bevelSize: 1,
+					bevelOffset: 0,
+					bevelSegments: 5
+				} );
+				textGeo.center();
+
+				if(effectController.textAsParticles) {
+					const vertices = textGeo.attributes.position.array;
+					for(let i = 0; i < vertices.length; i+=3) {
+						if(particleCount < maxParticleCount) {
+							particlePositions[particleCount * 3] = vertices[i];
+							particlePositions[particleCount * 3 + 1] = vertices[i+1];
+							particlePositions[particleCount * 3 + 2] = vertices[i+2];
+							particlesData[particleCount] = {
+								velocity: new THREE.Vector3(
+									-1 + Math.random() * 2,
+									-1 + Math.random() * 2,
+									-1 + Math.random() * 2
+								),
+								numConnections: 0,
+							};
+							particleCount++;
+						}
+					}
+					particles.setDrawRange(0, particleCount);
+					pointCloud.geometry.attributes.position.needsUpdate = true;
+				} else {
+					const textMaterial = new THREE.MeshPhongMaterial( { color: effectController.textColor, flatShading: true } );
+					textMesh = new THREE.Mesh( textGeo, textMaterial );
+					scene.add( textMesh );
+				}
 			}
 
 			function playTrack(trackIndex) {
@@ -343,7 +498,68 @@
 				renderer.setSize(window.innerWidth, window.innerHeight);
 			}
 
+			function updateSpaceshipControls() {
+				if(!spaceship) return;
+
+				const speed = effectController.spaceshipSpeed;
+				const rotationSpeed = 0.02;
+
+				if (effectController.cameraMovement === 'flight') {
+					if(keys['KeyW']) {
+						spaceship.translateZ(-speed);
+					}
+					if(keys['KeyS']) {
+						spaceship.translateZ(speed);
+					}
+					if(keys['KeyA']) {
+						spaceship.rotateY(rotationSpeed);
+					}
+					if(keys['KeyD']) {
+						spaceship.rotateY(-rotationSpeed);
+					}
+					if(keys['ArrowUp']) {
+						spaceship.rotateX(rotationSpeed);
+					}
+					if(keys['ArrowDown']) {
+						spaceship.rotateX(-rotationSpeed);
+					}
+					if(keys['ArrowLeft']) {
+						spaceship.rotateZ(rotationSpeed);
+					}
+					if(keys['ArrowRight']) {
+						spaceship.rotateZ(-rotationSpeed);
+					}
+				} else {
+					if(keys['KeyW']) {
+						spaceship.translateZ(speed);
+					}
+					if(keys['KeyS']) {
+						spaceship.translateZ(-speed);
+					}
+					if(keys['KeyA']) {
+						spaceship.rotateY(rotationSpeed);
+					}
+					if(keys['KeyD']) {
+						spaceship.rotateY(-rotationSpeed);
+					}
+					if(keys['ArrowUp']) {
+						spaceship.rotateX(rotationSpeed);
+					}
+					if(keys['ArrowDown']) {
+						spaceship.rotateX(-rotationSpeed);
+					}
+					if(keys['ArrowLeft']) {
+						spaceship.rotateZ(rotationSpeed);
+					}
+					if(keys['ArrowRight']) {
+						spaceship.rotateZ(-rotationSpeed);
+					}
+				}
+			}
+
 			function animate() {
+				updateSpaceshipControls();
+
 				let vertexpos = 0;
 				let colorpos = 0;
 				let numConnected = 0;
@@ -359,18 +575,48 @@
 						camera.position.x += Math.sin(time * effectController.cameraSpeed) * effectController.randomness * 10;
 						camera.position.y += Math.cos(time * effectController.cameraSpeed) * effectController.randomness * 10;
 						camera.position.z += Math.cos(time * effectController.cameraSpeed) * effectController.randomness * 10;
+						if(textMesh) {
+							const distance = camera.position.distanceTo(textMesh.position);
+							if(distance > 1000) {
+									camera.position.lerp(textMesh.position, 0.1);
+							}
+							camera.lookAt(textMesh.position);
+						}
 						break;
 					case 'still':
 						controls.autoRotate = false;
+						controls.enabled = true;
+						break;
+					case 'follow':
+						controls.autoRotate = false;
+						if(spaceship) {
+							const offset = new THREE.Vector3(0, 20, -50);
+							offset.applyQuaternion(spaceship.quaternion);
+							camera.position.copy(spaceship.position).add(offset);
+							camera.lookAt(spaceship.position);
+						}
+						break;
+					case 'flight':
+						controls.enabled = false;
+						if(spaceship) {
+							const cameraOffset = new THREE.Vector3(0, 10, -20); // Adjusted for above and behind
+							camera.position.copy(spaceship.position).add(cameraOffset.applyQuaternion(spaceship.quaternion));
+							camera.quaternion.copy(spaceship.quaternion);
+						}
 						break;
 				}
 
-				controls.update();
+				if (controls.enabled) {
+					controls.update();
+				}
+
+				if(spaceshipHelper) {
+					spaceshipHelper.update();
+				}
 
 				for (let i = 0; i < particleCount; i++){
 					if(particlesData[i]) particlesData[i].numConnections = 0;
 				}
-
 				if (analyser) {
 					const data = analyser.getFrequencyData();
 
@@ -389,6 +635,27 @@
 							particleData.velocity.z = (Math.random() - 0.5) * treble * effectController.trebleMultiplier;
 						}
 					}
+
+					switch(effectController.colorMode) {
+						case 'static':
+							pointCloud.material.color.set(effectController.particleColor);
+							break;
+						case 'bass':
+							pointCloud.material.color.set(new THREE.Color(bass/255, 0, 0));
+							break;
+						case 'mid':
+							pointCloud.material.color.set(new THREE.Color(0, mid/255, 0));
+							break;
+						case 'treble':
+							pointCloud.material.color.set(new THREE.Color(0, 0, treble/255));
+							break;
+					}
+				}
+
+				if(effectController.trackCamera && textMesh) {
+					textMesh.position.copy(camera.position);
+					textMesh.rotation.copy(camera.rotation);
+					textMesh.translateZ(-200);
 				}
 
 				for (let i = 0; i < particleCount; i++) {
