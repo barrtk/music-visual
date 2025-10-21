@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 	<head>
@@ -26,9 +25,7 @@
 
 		<script type="module">
 			import * as THREE from 'three';
-
 			import Stats from 'three/addons/libs/stats.module.js';
-
 			import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 			import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
@@ -40,18 +37,81 @@
 			const particlesData = [];
 			let camera, scene, renderer, controls, helper, textMesh, font;
 			let positions, colors;
-			let particles;
-			let pointCloud;
-			let particlePositions;
-			let linesMesh;
-
+			let particles, pointCloud, particlePositions, linesMesh;
 			let textureLoader = new THREE.TextureLoader();
-			let baseColorMap, roughnessMap, emissiveMap, metallicMap, normalMap;
-
+			let normalMap;
 			const maxParticleCount = 1000;
 			let particleCount = 500;
 			const r = 1600;
 			const rHalf = r / 2;
+            let originalSpaceshipMaterial, spaceshipShaderMaterial;
+
+            const materialUniforms = {
+                time: { value: 0 },
+                mousePosition: { value: new THREE.Vector2(0.5, 0.5) },
+                roughness: { value: 0.05 },
+                anisotropy: { value: 0.0 },
+                ior: { value: 2.95 },
+                clearcoat: { value: 0.0 },
+                dispersion: { value: 0.0 },
+                metalColor: { value: new THREE.Vector3(0.95, 0.95, 0.98) },
+                lightTemperature: { value: new THREE.Vector3(1, 1, 1) },
+                u_normalMap: { value: null },
+                u_useNormalMap: { value: false }
+            };
+
+            const customMaterial = new THREE.ShaderMaterial({
+                uniforms: materialUniforms,
+                vertexShader: `
+                    varying vec3 vNormal; varying vec3 vViewPosition; varying vec3 vWorldPosition; varying vec2 vUv; varying vec3 vTangent; varying vec3 vBitangent;
+                    void main() {
+                        vUv = uv; vNormal = normalize(normalMatrix * normal); vec3 objectTangent = vec3(1.0, 0.0, 0.0); vTangent = normalize(normalMatrix * objectTangent);
+                        vBitangent = cross(vNormal, vTangent); vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); vViewPosition = -mvPosition.xyz;
+                        vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz; gl_Position = projectionMatrix * mvPosition;
+                    }
+                `,
+                fragmentShader: `
+                    uniform float time, roughness, anisotropy, ior, clearcoat, dispersion; uniform vec2 mousePosition; uniform vec3 metalColor, lightTemperature;
+                    uniform sampler2D u_normalMap; uniform bool u_useNormalMap;
+                    varying vec3 vNormal, vViewPosition, vWorldPosition, vTangent, vBitangent; varying vec2 vUv;
+                    vec3 fresnelSchlick(float cosTheta, vec3 F0) { return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0); }
+                    float distributionAnisotropicGGX(vec3 N, vec3 H, vec3 T, vec3 B, float r, float a) { float rT=r*(1.0+a); float rB=r*(1.0-a); float dotTH=dot(T,H); float dotBH=dot(B,H); float dotNH=dot(N,H); float a2=rT*rB; float d=dotTH*dotTH/(rT*rT)+dotBH*dotBH/(rB*rB)+dotNH*dotNH; return 1.0/(3.14159*rT*rB*d*d); }
+                    float geometrySchlickGGX(float NdotV, float r) { float k=(r+1.0)*(r+1.0)/8.0; return NdotV/(NdotV*(1.0-k)+k); }
+                    float geometrySmith(vec3 N, vec3 V, vec3 L, float r) { return geometrySchlickGGX(max(dot(N,V),0.0),r)*geometrySchlickGGX(max(dot(N,L),0.0),r); }
+                    void main() {
+                        vec3 normal = normalize(vNormal);
+                        if (u_useNormalMap) {
+                            mat3 tbn = mat3(normalize(vTangent), normalize(vBitangent), normalize(vNormal));
+                            vec3 normalFromMap = texture2D(u_normalMap, vUv).xyz * 2.0 - 1.0;
+                            normal = normalize(tbn * normalFromMap);
+                        }
+                        vec3 V=normalize(vViewPosition);
+                        vec3 light1=vec3((mousePosition.x-0.5)*10.0, (mousePosition.y-0.5)*10.0, 5.0), light2=vec3(-3,3,5), light3=vec3(3,-3,5);
+                        vec3 color=vec3(0); vec3 lights[] = vec3[](light1,light2,light3); vec3 lightColors[] = vec3[](lightTemperature, vec3(0.5,0.5,0.7)*lightTemperature, vec3(0.7,0.5,0.5)*lightTemperature);
+                        for(int i=0;i<3;i++){
+                            vec3 L=normalize(lights[i]-vWorldPosition), H=normalize(L+V); float n1=1.0, n2=ior; float F0s=pow((n1-n2)/(n1+n2),2.0); vec3 F0=mix(vec3(F0s),metalColor,0.95);
+                            float D=distributionAnisotropicGGX(normal,H,vTangent,vBitangent,roughness,anisotropy); float G=geometrySmith(normal,V,L,roughness); vec3 F=fresnelSchlick(max(dot(H,V),0.0),F0);
+                            vec3 spec=D*G*F/(4.0*max(dot(normal,V),0.0)*max(dot(normal,L),0.0)+0.001); color+=(vec3(1.0)-F)*0.0*metalColor/3.14159+spec*lightColors[i]*max(dot(normal,L),0.0);
+                        }
+                        if(clearcoat>0.0){ vec3 clearcoatN=normal; float clearcoatR=0.04; vec3 L=normalize(lights[0]-vWorldPosition), H=normalize(L+V); float D=distributionAnisotropicGGX(clearcoatN,H,vTangent,vBitangent,clearcoatR,0.0); float G=geometrySmith(clearcoatN,V,L,clearcoatR); vec3 F=fresnelSchlick(max(dot(H,V),0.0),vec3(0.04)); vec3 spec=D*G*F/(4.0*max(dot(clearcoatN,V),0.0)*max(dot(clearcoatN,L),0.0)+0.001); color+=spec*clearcoat*max(dot(clearcoatN,L),0.0)*lightTemperature; }
+                        float edge=pow(1.0-abs(dot(normal,V)),2.0); vec3 dispColor=vec3(sin(edge*6.283),sin(edge*6.283+2.094),sin(edge*6.283+4.189))*dispersion;
+                        color+=dispColor*edge+metalColor*0.03*lightTemperature; color=color/(color+vec3(1.0)); color=pow(color,vec3(1.0/2.2));
+                        gl_FragColor=vec4(color,1.0);
+                    }
+                `
+            });
+
+            const presets = {
+                chrome: { roughness: 0.05, anisotropy: 0, ior: 2.95, clearcoat: 0, dispersion: 0, metalColor: [0.95, 0.95, 0.98] },
+                gold: { roughness: 0.1, anisotropy: 0, ior: 0.47, clearcoat: 0, dispersion: 0, metalColor: [1.0, 0.766, 0.336] },
+                copper: { roughness: 0.15, anisotropy: 0, ior: 0.46, clearcoat: 0, dispersion: 0, metalColor: [0.955, 0.637, 0.538] },
+                aluminum: { roughness: 0.1, anisotropy: 0.8, ior: 1.39, clearcoat: 0, dispersion: 0, metalColor: [0.913, 0.921, 0.925] },
+                titanium: { roughness: 0.2, anisotropy: 0.3, ior: 2.16, clearcoat: 0.1, dispersion: 0.05, metalColor: [0.542, 0.497, 0.449] },
+                pearl: { roughness: 0.3, anisotropy: 0, ior: 1.7, clearcoat: 0.8, dispersion: 0.15, metalColor: [0.95, 0.95, 0.98] },
+                diamond: { roughness: 0.01, anisotropy: 0, ior: 2.417, clearcoat: 1, dispersion: 0.3, metalColor: [0.98, 0.98, 1.0] },
+                'car-paint': { roughness: 0.2, anisotropy: 0, ior: 1.5, clearcoat: 1, dispersion: 0.02, metalColor: [0.1, 0.1, 0.5] },
+                custom: { roughness: 0.5, anisotropy: 0.5, ior: 1.5, clearcoat: 0.5, dispersion: 0.1, metalColor: [0.95, 0.95, 0.98] }
+            };
 
 			const effectController = {
 				showDots: true,
@@ -67,13 +127,7 @@
 				openFileDialog: function() { document.getElementById('fileInput').click(); },
 				nextTrack: function() { playNext(); },
 				prevTrack: function() { playPrev(); },
-				playPause: function() { 
-					if(audioPlayer.paused) {
-						audioPlayer.play();
-					} else {
-						audioPlayer.pause();
-					}
-				},
+				playPause: function() { if(audioPlayer.paused) audioPlayer.play(); else audioPlayer.pause(); },
 				seek: 0,
 				bassMultiplier: 0.5,
 				midMultiplier: 0.5,
@@ -85,78 +139,78 @@
 				bassColor: 0xff0000,
 				midColor: 0x00ff00,
 				trebleColor: 0x0000ff,
-				text: '',
+				text: 'SHINE',
 				trackCamera: false,
 				textAsParticles: false,
-				textColor: 0xffffff,
+                preset: 'chrome',
+                roughness: 0.05,
+                anisotropy: 0.0,
+                ior: 2.4,
+                clearcoat: 0.0,
+                dispersion: 0.0,
+                lightTemperature: 6500,
 				spaceshipSpeed: 1.0,
 				spaceshipSize: 0.005,
 				spaceshipVisible: true,
-				showTestCube: false,
+                showSpaceshipHelper: true,
+                useShaderLightingForShip: false,
 			};
 
-			// Audio
-			let audio, analyser, audioPlayer, fileInput;
-			let playlist = [];
-			let currentTrack = 0;
-			let seekSlider;
+			let audio, analyser, audioPlayer, fileInput, seekSlider;
+			let playlist = [], currentTrack = 0;
 
 			init();
 			animate();
 
+            function updateShaderMaterial() {
+                materialUniforms.roughness.value = effectController.roughness;
+                materialUniforms.anisotropy.value = effectController.anisotropy;
+                materialUniforms.ior.value = effectController.ior;
+                materialUniforms.clearcoat.value = effectController.clearcoat;
+                materialUniforms.dispersion.value = effectController.dispersion;
+                
+                const k = effectController.lightTemperature;
+                const t=k/100; let r,g,b;
+                if(t<=66){r=255;g=99.47*Math.log(t)-161.12;b=t<=19?0:138.52*Math.log(t-10)-305.04;}else{r=329.7*Math.pow(t-60,-0.133);g=288.12*Math.pow(t-60,-0.0755);b=255;}
+                materialUniforms.lightTemperature.value.set(r/255, g/255, b/255);
+            }
+
+            function toggleShipShader(useShader) {
+                if (!spaceship) return;
+                const materialToApply = useShader ? spaceshipShaderMaterial : originalSpaceshipMaterial;
+                spaceship.traverse(c => {
+                    if (c.isMesh) {
+                        c.material = materialToApply;
+                    }
+                });
+            }
+
 			function initGUI() {
 				const gui = new GUI();
-
 				const musicFolder = gui.addFolder('Music');
 				musicFolder.add(effectController, 'openFileDialog').name('Open Files');
 				musicFolder.add(effectController, 'prevTrack').name('Previous');
 				musicFolder.add(effectController, 'nextTrack').name('Next');
 				musicFolder.add(effectController, 'playPause').name('Play/Pause');
-				seekSlider = musicFolder.add(effectController, 'seek', 0, 1, 0.01).name('Seek').onChange((value) => {
-					if(audioPlayer.duration) {
-						audioPlayer.currentTime = value * audioPlayer.duration;
-					}
-				});
+				seekSlider = musicFolder.add(effectController, 'seek', 0, 1, 0.01).name('Seek').onChange(v => { if(audioPlayer.duration) audioPlayer.currentTime = v * audioPlayer.duration; });
 
 				const visualFolder = gui.addFolder('Visuals');
-				visualFolder.add(effectController, 'showDots').onChange(function (value) {
-					pointCloud.visible = value;
-				});
-				visualFolder.add(effectController, 'showLines').onChange(function (value) {
-					linesMesh.visible = value;
-				});
+				visualFolder.add(effectController, 'showDots').onChange(v => pointCloud.visible = v);
+				visualFolder.add(effectController, 'showLines').onChange(v => linesMesh.visible = v);
 				visualFolder.add(effectController, 'minDistance', 10, 300);
 				visualFolder.add(effectController, 'limitConnections');
 				visualFolder.add(effectController, 'maxConnections', 0, 30, 1);
-				visualFolder.add(
-					effectController,
-					'particleCount',
-					0,
-					maxParticleCount,
-					1
-				).onChange(function (value) {
-					particleCount = parseInt(value);
-					particles.setDrawRange(0, particleCount);
-				});
-				visualFolder.add(effectController, 'particleSize', 1, 10, 1).onChange(function (value) {
-					pointCloud.material.size = value;
-				});
-				visualFolder.add(effectController, 'fillScreen').onChange(function (value) {
-					// Re-initialize particles
-					initParticles();
-				});
-				visualFolder.add(effectController, 'showBox').onChange(function (value) {
-					helper.visible = value;
-				});
+				visualFolder.add(effectController, 'particleCount', 0, maxParticleCount, 1).onChange(v => { particleCount = v; particles.setDrawRange(0, v); });
+				visualFolder.add(effectController, 'particleSize', 1, 10, 1).onChange(v => pointCloud.material.size = v);
+				visualFolder.add(effectController, 'fillScreen').onChange(v => initParticles());
+				visualFolder.add(effectController, 'showBox').onChange(v => helper.visible = v);
 				visualFolder.add(effectController, 'bassMultiplier', 0, 2, 0.1);
 				visualFolder.add(effectController, 'midMultiplier', 0, 2, 0.1);
 				visualFolder.add(effectController, 'trebleMultiplier', 0, 2, 0.1);
 
 				const colorFolder = gui.addFolder('Colors');
 				colorFolder.add(effectController, 'colorMode', [ 'static', 'bass', 'mid', 'treble' ] ).name('Color Mode');
-				colorFolder.addColor(effectController, 'particleColor').onChange(function (value) {
-					pointCloud.material.color.set(value);
-				});
+				colorFolder.addColor(effectController, 'particleColor').onChange(v => pointCloud.material.color.set(v));
 				colorFolder.addColor(effectController, 'bassColor');
 				colorFolder.addColor(effectController, 'midColor');
 				colorFolder.addColor(effectController, 'trebleColor');
@@ -170,121 +224,75 @@
 				textFolder.add(effectController, 'text').name('Text').onChange(createText);
 				textFolder.add(effectController, 'trackCamera').name('Track Camera');
 				textFolder.add(effectController, 'textAsParticles').name('Text as Particles').onChange(createText);
-				textFolder.addColor(effectController, 'textColor').onChange(createText);
+                textFolder.add(effectController, 'preset', Object.keys(presets)).name('Preset').onChange(v => {
+                    const p = presets[v];
+                    effectController.roughness = p.roughness;
+                    effectController.anisotropy = p.anisotropy;
+                    effectController.ior = p.ior;
+                    effectController.clearcoat = p.clearcoat;
+                    effectController.dispersion = p.dispersion;
+                    materialUniforms.metalColor.value.set(...p.metalColor);
+                    gui.updateDisplay();
+                    updateShaderMaterial();
+                });
+                textFolder.add(effectController, 'roughness', 0, 1, 0.01).onChange(updateShaderMaterial);
+                textFolder.add(effectController, 'anisotropy', 0, 1, 0.01).onChange(updateShaderMaterial);
+                textFolder.add(effectController, 'ior', 1, 3, 0.01).onChange(updateShaderMaterial);
+                textFolder.add(effectController, 'clearcoat', 0, 1, 0.01).onChange(updateShaderMaterial);
+                textFolder.add(effectController, 'dispersion', 0, 0.5, 0.01).onChange(updateShaderMaterial);
+                textFolder.add(effectController, 'lightTemperature', 2000, 10000, 100).name('Light Temp').onChange(updateShaderMaterial);
 
 				const spaceshipFolder = gui.addFolder('Spaceship');
 				spaceshipFolder.add(effectController, 'spaceshipSpeed', 0, 10, 0.1).name('Speed');
-				spaceshipFolder.add(effectController, 'spaceshipSize', 0.001, 5, 0.001).name('Size').onChange(function (value) {
-					if(spaceship) {
-						spaceship.scale.set(value, value, value);
-					}
-				});
-				spaceshipFolder.add(effectController, 'spaceshipVisible').name('Visible').onChange(function (value) {
-					if(spaceship) {
-						spaceship.visible = value;
-					}
-				});
-				spaceshipFolder.add(effectController, 'showTestCube').name('Show Test Cube').onChange(function (value) {
-					if(testCube) {
-						testCube.visible = value;
-					}
-				});
+				spaceshipFolder.add(effectController, 'spaceshipSize', 0.001, 5, 0.001).name('Size').onChange(v => { if(spaceship) spaceship.scale.set(v,v,v); });
+				spaceshipFolder.add(effectController, 'spaceshipVisible').name('Visible').onChange(v => { if(spaceship) spaceship.visible = v; });
+                spaceshipFolder.add(effectController, 'showSpaceshipHelper').name('Show Helper').onChange(v => { if(spaceshipHelper) spaceshipHelper.visible = v; });
+                spaceshipFolder.add(effectController, 'useShaderLightingForShip').name('Shader Lighting').onChange(toggleShipShader);
 			}
 
 			function init() {
 				initGUI();
-
 				container = document.getElementById('container');
-
-				camera = new THREE.PerspectiveCamera(
-					45,
-					window.innerWidth / window.innerHeight,
-					1,
-					20000
-				);
+				camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 20000);
 				camera.position.set(0, 50, 200);
-
 				scene = new THREE.Scene();
 
-				const ambientLight = new THREE.AmbientLight( 0xcccccc, 1.0 ); // Increased intensity
+				const ambientLight = new THREE.AmbientLight( 0xcccccc, 1.0 );
 				scene.add( ambientLight );
-
-				const directionalLight = new THREE.DirectionalLight( 0xffffff, 1.5 ); // Increased intensity
+				const directionalLight = new THREE.DirectionalLight( 0xffffff, 1.5 );
 				directionalLight.position.set( 1, 1, 1 );
 				scene.add( directionalLight );
-
-				const hemisphereLight = new THREE.HemisphereLight( 0xffffbb, 0x080820, 1 ); // Added HemisphereLight
+				const hemisphereLight = new THREE.HemisphereLight( 0xffffbb, 0x080820, 1 );
 				scene.add( hemisphereLight );
-
-				// Test Cube
-				const testCube = new THREE.Mesh(new THREE.BoxGeometry(50, 50, 50), new THREE.MeshNormalMaterial());
-				testCube.position.set(0, 0, 0);
-				testCube.visible = effectController.showTestCube;
-				scene.add(testCube);
 
 				group = new THREE.Group();
 				scene.add(group);
 
-				helper = new THREE.BoxHelper(
-					new THREE.Mesh(new THREE.BoxGeometry(r, r, r))
-				);
+				helper = new THREE.BoxHelper(new THREE.Mesh(new THREE.BoxGeometry(r, r, r)));
 				helper.material.color.setHex(0x101010);
 				helper.material.blending = THREE.AdditiveBlending;
 				helper.material.transparent = true;
 				group.add(helper);
 
 				const segments = maxParticleCount * maxParticleCount;
-
 				positions = new Float32Array(segments * 3);
 				colors = new Float32Array(segments * 3);
 
-				const pMaterial = new THREE.PointsMaterial({
-					color: effectController.particleColor,
-					size: effectController.particleSize,
-					blending: THREE.AdditiveBlending,
-					transparent: true,
-					sizeAttenuation: false,
-				});
-
+				const pMaterial = new THREE.PointsMaterial({ color: effectController.particleColor, size: effectController.particleSize, blending: THREE.AdditiveBlending, transparent: true, sizeAttenuation: false });
 				particles = new THREE.BufferGeometry();
 				particlePositions = new Float32Array(maxParticleCount * 3);
-
 				initParticles();
-
 				particles.setDrawRange(0, particleCount);
-				particles.setAttribute(
-					'position',
-					new THREE.BufferAttribute(particlePositions, 3).setUsage(
-						THREE.DynamicDrawUsage
-					)
-				);
-
+				particles.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3).setUsage(THREE.DynamicDrawUsage));
 				pointCloud = new THREE.Points(particles, pMaterial);
 				group.add(pointCloud);
 
 				const geometry = new THREE.BufferGeometry();
-
-				geometry.setAttribute(
-					'position',
-					new THREE.BufferAttribute(positions, 3).setUsage(
-						THREE.DynamicDrawUsage
-					)
-				);
-				geometry.setAttribute(
-					'color',
-					new THREE.BufferAttribute(colors, 3).setUsage(THREE.DynamicDrawUsage)
-				);
-
+				geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
+				geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3).setUsage(THREE.DynamicDrawUsage));
 				geometry.computeBoundingSphere();
-
 				geometry.setDrawRange(0, 0);
-
-				const material = new THREE.LineBasicMaterial({
-					vertexColors: true,
-					blending: THREE.AdditiveBlending,
-					transparent: true,
-				});
-
+				const material = new THREE.LineBasicMaterial({ vertexColors: true, blending: THREE.AdditiveBlending, transparent: true });
 				linesMesh = new THREE.LineSegments(geometry, material);
 				group.add(linesMesh);
 
@@ -294,44 +302,31 @@
 					createText();
 				} );
 
-				baseColorMap = textureLoader.load('models/Tri_Fighter_2_Set_1_BaseColor.png', undefined, undefined, function (err) { console.error('Error loading baseColorMap:', err); });
-				roughnessMap = textureLoader.load('models/Tri_Fighter_2_Set_1_Roughness.jpg', undefined, undefined, function (err) { console.error('Error loading roughnessMap:', err); });
-				emissiveMap = textureLoader.load('models/Tri_Fighter_2_Set_1_Emissive.jpg', undefined, undefined, function (err) { console.error('Error loading emissiveMap:', err); });
-				metallicMap = textureLoader.load('models/Tri_Fighter_2_Set_1_Metallic.jpg', undefined, undefined, function (err) { console.error('Error loading metallicMap:', err); });
-				normalMap = textureLoader.load('models/Tri_Fighter_2_Set_1_Normal.jpg', undefined, undefined, function (err) { console.error('Error loading normalMap:', err); }); // Assuming this filename
-
-				const spaceshipMaterial = new THREE.MeshStandardMaterial({
-					map: baseColorMap,
-					roughnessMap: roughnessMap,
-					emissiveMap: emissiveMap,
-					metalnessMap: metallicMap,
-					normalMap: normalMap,
-				});
-
+				normalMap = textureLoader.load('models/Tri_Fighter_2_Set_1_Normal.jpg');
 				const fbxLoader = new FBXLoader();
 				fbxLoader.load('models/statek1.fbx', function (object) {
 					spaceship = object;
+                    originalSpaceshipMaterial = new THREE.MeshBasicMaterial({ map: normalMap });
+                    spaceshipShaderMaterial = customMaterial.clone();
+                    spaceshipShaderMaterial.uniforms = THREE.UniformsUtils.clone(materialUniforms);
+
+                    spaceshipShaderMaterial.uniforms.u_useNormalMap.value = true;
+                    spaceshipShaderMaterial.uniforms.u_normalMap.value = normalMap;
+                    spaceshipShaderMaterial.uniforms.metalColor.value = new THREE.Vector3(0.95, 0.95, 0.98);
+
 					spaceship.scale.set(effectController.spaceshipSize, effectController.spaceshipSize, effectController.spaceshipSize);
-					spaceship.position.set(0, 0, 0);
 					spaceship.visible = effectController.spaceshipVisible;
 					scene.add(spaceship);
-
-					spaceship.traverse(function (child) {
-						if (child.isMesh) {
-							child.material = spaceshipMaterial;
-						}
-					});
-
+					spaceship.traverse(c => { if (c.isMesh) c.material = originalSpaceshipMaterial; });
 					spaceshipHelper = new THREE.BoxHelper(spaceship, 0xffff00);
+                    spaceshipHelper.visible = effectController.showSpaceshipHelper;
 					scene.add(spaceshipHelper);
-					console.log('Spaceship loaded:', spaceship);
 				});
 
 				renderer = new THREE.WebGLRenderer({ antialias: true });
 				renderer.setPixelRatio(window.devicePixelRatio);
 				renderer.setSize(window.innerWidth, window.innerHeight);
 				renderer.outputEncoding = THREE.sRGBEncoding;
-
 				container.appendChild(renderer.domElement);
 
 				controls = new OrbitControls( camera, renderer.domElement );
@@ -340,86 +335,48 @@
 				stats = new Stats();
 				container.appendChild(stats.dom);
 
-				window.addEventListener('keydown', function(event) {
-					keys[event.code] = true;
-				});
-				window.addEventListener('keyup', function(event) {
-					keys[event.code] = false;
-				});
-
+				window.addEventListener('keydown', e => { keys[e.code] = true; });
+				window.addEventListener('keyup', e => { keys[e.code] = false; });
 				window.addEventListener('resize', onWindowResize);
+                window.addEventListener('mousemove', e => {
+                    materialUniforms.mousePosition.value.x = e.clientX / window.innerWidth;
+                    materialUniforms.mousePosition.value.y = e.clientY / window.innerHeight;
+                });
 
-				// Audio
 				audioPlayer = document.getElementById('audio-player');
-
 				fileInput = document.createElement('input');
-				fileInput.type = 'file';
-				fileInput.id = 'fileInput';
-				fileInput.accept = 'audio/*';
-				fileInput.multiple = true;
-				fileInput.style.display = 'none';
+				fileInput.type = 'file'; fileInput.id = 'fileInput'; fileInput.accept = 'audio/*'; fileInput.multiple = true; fileInput.style.display = 'none';
 				document.body.appendChild(fileInput);
-
 				fileInput.addEventListener('change', (event) => {
 					playlist = Array.from(event.target.files);
 					currentTrack = 0;
 					playTrack(currentTrack);
 				});
-
-				audioPlayer.addEventListener('ended', () => {
-					playNext();
-				});
-
-				audioPlayer.addEventListener('timeupdate', () => {
-					if(audioPlayer.duration) {
-						effectController.seek = audioPlayer.currentTime / audioPlayer.duration;
-						seekSlider.updateDisplay();
-					}
-				});
-
+				audioPlayer.addEventListener('ended', () => playNext());
+				audioPlayer.addEventListener('timeupdate', () => { if(audioPlayer.duration) { effectController.seek = audioPlayer.currentTime / audioPlayer.duration; if(seekSlider) seekSlider.updateDisplay(); } });
 			}
 
 			function createText() {
 				if(!font) return;
-				if(textMesh) {
-					scene.remove(textMesh);
-				}
-				const textGeo = new TextGeometry( effectController.text, {
-					font: font,
-					size: 50,
-					height: 5,
-					curveSegments: 12,
-					bevelEnabled: true,
-					bevelThickness: 2,
-					bevelSize: 1,
-					bevelOffset: 0,
-					bevelSegments: 5
-				} );
+				if(textMesh) scene.remove(textMesh);
+				
+                const textGeo = new TextGeometry( effectController.text, { font: font, size: 50, height: 5, curveSegments: 12, bevelEnabled: true, bevelThickness: 2, bevelSize: 1, bevelOffset: 0, bevelSegments: 5 } );
 				textGeo.center();
+                textGeo.computeVertexNormals();
 
 				if(effectController.textAsParticles) {
 					const vertices = textGeo.attributes.position.array;
-					for(let i = 0; i < vertices.length; i+=3) {
+					for(let i=0; i<vertices.length; i+=3) {
 						if(particleCount < maxParticleCount) {
-							particlePositions[particleCount * 3] = vertices[i];
-							particlePositions[particleCount * 3 + 1] = vertices[i+1];
-							particlePositions[particleCount * 3 + 2] = vertices[i+2];
-							particlesData[particleCount] = {
-								velocity: new THREE.Vector3(
-									-1 + Math.random() * 2,
-									-1 + Math.random() * 2,
-									-1 + Math.random() * 2
-								),
-								numConnections: 0,
-							};
+							particlePositions[particleCount*3] = vertices[i]; particlePositions[particleCount*3+1] = vertices[i+1]; particlePositions[particleCount*3+2] = vertices[i+2];
+							particlesData[particleCount] = { velocity: new THREE.Vector3(-1+Math.random()*2, -1+Math.random()*2, -1+Math.random()*2), numConnections: 0 };
 							particleCount++;
 						}
 					}
 					particles.setDrawRange(0, particleCount);
 					pointCloud.geometry.attributes.position.needsUpdate = true;
 				} else {
-					const textMaterial = new THREE.MeshPhongMaterial( { color: effectController.textColor, flatShading: true } );
-					textMesh = new THREE.Mesh( textGeo, textMaterial );
+					textMesh = new THREE.Mesh( textGeo, customMaterial );
 					scene.add( textMesh );
 				}
 			}
@@ -432,174 +389,102 @@
 					audioPlayer.play();
 					document.getElementById('current-song-title').textContent = `Now playing: ${file.name}`;
 					currentTrack = trackIndex;
-
 					const listener = new THREE.AudioListener();
 					camera.add(listener);
-
 					audio = new THREE.Audio(listener);
 					audio.setMediaElementSource(audioPlayer);
-
 					analyser = new THREE.AudioAnalyser(audio, 256);
 				}
 			}
 
-			function playNext() {
-				let nextTrack = currentTrack + 1;
-				if (nextTrack >= playlist.length) {
-					nextTrack = 0;
-				}
-				playTrack(nextTrack);
-			}
-
-			function playPrev() {
-				let prevTrack = currentTrack - 1;
-				if (prevTrack < 0) {
-					prevTrack = playlist.length - 1;
-				}
-				playTrack(prevTrack);
-			}
+			function playNext() { currentTrack = (currentTrack + 1) % playlist.length; playTrack(currentTrack); }
+			function playPrev() { currentTrack = (currentTrack - 1 + playlist.length) % playlist.length; playTrack(currentTrack); }
 
 			function initParticles() {
 				particlesData.length = 0;
 				for (let i = 0; i < maxParticleCount; i++) {
-					let x, y, z;
-					if (effectController.fillScreen) {
-						x = Math.random() * window.innerWidth - window.innerWidth / 2;
-						y = Math.random() * window.innerHeight - window.innerHeight / 2;
-						z = Math.random() * r - r / 2;
-					} else {
-						x = Math.random() * r - r / 2;
-						y = Math.random() * r - r / 2;
-						z = Math.random() * r - r / 2;
-					}
-
-
-					particlePositions[i * 3] = x;
-					particlePositions[i * 3 + 1] = y;
-					particlePositions[i * 3 + 2] = z;
-
-					particlesData.push({
-						velocity: new THREE.Vector3(
-							-1 + Math.random() * 2,
-							-1 + Math.random() * 2,
-							-1 + Math.random() * 2
-						),
-						numConnections: 0,
-					});
+					let x = Math.random()*r-r/2, y=Math.random()*r-r/2, z=Math.random()*r-r/2;
+					particlePositions[i*3]=x; particlePositions[i*3+1]=y; particlePositions[i*3+2]=z;
+					particlesData.push({ velocity: new THREE.Vector3(-1+Math.random()*2, -1+Math.random()*2, -1+Math.random()*2), numConnections: 0 });
 				}
 				if(pointCloud) pointCloud.geometry.attributes.position.needsUpdate = true;
-
 			}
 
-			function onWindowResize() {
-				camera.aspect = window.innerWidth / window.innerHeight;
-				camera.updateProjectionMatrix();
-
-				renderer.setSize(window.innerWidth, window.innerHeight);
-			}
+			function onWindowResize() { camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); }
 
 			function updateSpaceshipControls() {
-				if(!spaceship) return;
+                if(!spaceship) return;
+                const speed = effectController.spaceshipSpeed;
+                const rotationSpeed = 0.02;
 
-				const speed = effectController.spaceshipSpeed;
-				const rotationSpeed = 0.02;
-
-				if (effectController.cameraMovement === 'flight') {
-					if(keys['KeyW']) {
-						spaceship.translateZ(-speed);
-					}
-					if(keys['KeyS']) {
-						spaceship.translateZ(speed);
-					}
-					if(keys['KeyA']) {
-						spaceship.rotateY(rotationSpeed);
-					}
-					if(keys['KeyD']) {
-						spaceship.rotateY(-rotationSpeed);
-					}
-					if(keys['ArrowUp']) {
-						spaceship.rotateX(rotationSpeed);
-					}
-					if(keys['ArrowDown']) {
-						spaceship.rotateX(-rotationSpeed);
-					}
-					if(keys['ArrowLeft']) {
-						spaceship.rotateZ(rotationSpeed);
-					}
-					if(keys['ArrowRight']) {
-						spaceship.rotateZ(-rotationSpeed);
-					}
-				} else {
-					if(keys['KeyW']) {
-						spaceship.translateZ(speed);
-					}
-					if(keys['KeyS']) {
-						spaceship.translateZ(-speed);
-					}
-					if(keys['KeyA']) {
-						spaceship.rotateY(rotationSpeed);
-					}
-					if(keys['KeyD']) {
-						spaceship.rotateY(-rotationSpeed);
-					}
-					if(keys['ArrowUp']) {
-						spaceship.rotateX(rotationSpeed);
-					}
-					if(keys['ArrowDown']) {
-						spaceship.rotateX(-rotationSpeed);
-					}
-					if(keys['ArrowLeft']) {
-						spaceship.rotateZ(rotationSpeed);
-					}
-					if(keys['ArrowRight']) {
-						spaceship.rotateZ(-rotationSpeed);
-					}
-				}
+                if (effectController.cameraMovement === 'flight') {
+                    if(keys['KeyW']) { spaceship.translateZ(-speed); }
+                    if(keys['KeyS']) { spaceship.translateZ(speed); }
+                    if(keys['KeyA']) { spaceship.rotateY(rotationSpeed); }
+                    if(keys['KeyD']) { spaceship.rotateY(-rotationSpeed); }
+                    if(keys['ArrowUp']) { spaceship.rotateX(rotationSpeed); }
+                    if(keys['ArrowDown']) { spaceship.rotateX(-rotationSpeed); }
+                    if(keys['ArrowLeft']) { spaceship.rotateZ(rotationSpeed); }
+                    if(keys['ArrowRight']) { spaceship.rotateZ(-rotationSpeed); }
+                } else {
+                    if(keys['KeyW']) { spaceship.translateZ(speed); }
+                    if(keys['KeyS']) { spaceship.translateZ(-speed); }
+                    if(keys['KeyA']) { spaceship.rotateY(rotationSpeed); }
+                    if(keys['KeyD']) { spaceship.rotateY(-rotationSpeed); }
+                    if(keys['ArrowUp']) { spaceship.rotateX(rotationSpeed); }
+                    if(keys['ArrowDown']) { spaceship.rotateX(-rotationSpeed); }
+                    if(keys['ArrowLeft']) { spaceship.rotateZ(rotationSpeed); }
+                    if(keys['ArrowRight']) { spaceship.rotateZ(-rotationSpeed); }
+                }
 			}
 
 			function animate() {
+                requestAnimationFrame(animate);
+
+				// UPDATE LOGIC
 				updateSpaceshipControls();
+                if(spaceshipHelper) spaceshipHelper.update();
+                materialUniforms.time.value += 0.01;
 
-				let vertexpos = 0;
-				let colorpos = 0;
-				let numConnected = 0;
-
+				// CAMERA LOGIC
 				switch(effectController.cameraMovement) {
 					case 'orbit':
+						controls.enabled = true;
 						controls.autoRotate = true;
 						controls.autoRotateSpeed = effectController.cameraSpeed;
 						break;
 					case 'random':
+						controls.enabled = false;
 						controls.autoRotate = false;
 						const time = Date.now() * 0.0001;
 						camera.position.x += Math.sin(time * effectController.cameraSpeed) * effectController.randomness * 10;
 						camera.position.y += Math.cos(time * effectController.cameraSpeed) * effectController.randomness * 10;
 						camera.position.z += Math.cos(time * effectController.cameraSpeed) * effectController.randomness * 10;
 						if(textMesh) {
-							const distance = camera.position.distanceTo(textMesh.position);
-							if(distance > 1000) {
-									camera.position.lerp(textMesh.position, 0.1);
-							}
 							camera.lookAt(textMesh.position);
-						}
-						break;
-					case 'still':
-						controls.autoRotate = false;
-						controls.enabled = true;
-						break;
-					case 'follow':
-						controls.autoRotate = false;
-						if(spaceship) {
-							const offset = new THREE.Vector3(0, 20, -50);
-							offset.applyQuaternion(spaceship.quaternion);
-							camera.position.copy(spaceship.position).add(offset);
+						} else if (spaceship) {
 							camera.lookAt(spaceship.position);
 						}
 						break;
-					case 'flight':
+					case 'still':
+						controls.enabled = true;
+						controls.autoRotate = false;
+						break;
+					case 'follow': // This is the new "spaceship camera"
 						controls.enabled = false;
+						controls.autoRotate = false;
 						if(spaceship) {
-							const cameraOffset = new THREE.Vector3(0, 10, -20); // Adjusted for above and behind
+							const offset = new THREE.Vector3(0, 20, 60); // A fixed position behind and above the ship
+							const desiredPosition = spaceship.position.clone().add(offset.applyQuaternion(spaceship.quaternion));
+							camera.position.lerp(desiredPosition, 0.1); // Smoothly follow
+							camera.lookAt(spaceship.position);
+						}
+						break;
+					case 'flight': // This is the original first-person cockpit view
+						controls.enabled = false;
+						controls.autoRotate = false;
+						if(spaceship) {
+							const cameraOffset = new THREE.Vector3(0, 10, -20);
 							camera.position.copy(spaceship.position).add(cameraOffset.applyQuaternion(spaceship.quaternion));
 							camera.quaternion.copy(spaceship.quaternion);
 						}
@@ -610,145 +495,60 @@
 					controls.update();
 				}
 
-				if(spaceshipHelper) {
-					spaceshipHelper.update();
-				}
+				let vertexpos = 0, colorpos = 0, numConnected = 0;
+				for (let i = 0; i < particleCount; i++) if(particlesData[i]) particlesData[i].numConnections = 0;
 
-				for (let i = 0; i < particleCount; i++){
-					if(particlesData[i]) particlesData[i].numConnections = 0;
-				}
 				if (analyser) {
 					const data = analyser.getFrequencyData();
-
 					const bass = data.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
 					const mid = data.slice(10, 20).reduce((a, b) => a + b, 0) / 10;
 					const treble = data.slice(20, 30).reduce((a, b) => a + b, 0) / 10;
-
-					const guiMinDistance = effectController.minDistance;
-					effectController.minDistance = bass > guiMinDistance ? bass : guiMinDistance;
-
 					for (let i = 0; i < particleCount; i++) {
 						if(particlesData[i]){
-							const particleData = particlesData[i];
-							particleData.velocity.x = (Math.random() - 0.5) * bass * effectController.bassMultiplier;
-							particleData.velocity.y = (Math.random() - 0.5) * mid * effectController.midMultiplier;
-							particleData.velocity.z = (Math.random() - 0.5) * treble * effectController.trebleMultiplier;
+							const p = particlesData[i];
+							p.velocity.x += (Math.random() - 0.5) * bass * effectController.bassMultiplier * 0.1;
+							p.velocity.y += (Math.random() - 0.5) * mid * effectController.midMultiplier * 0.1;
+							p.velocity.z += (Math.random() - 0.5) * treble * effectController.trebleMultiplier * 0.1;
 						}
 					}
-
-					switch(effectController.colorMode) {
-						case 'static':
-							pointCloud.material.color.set(effectController.particleColor);
-							break;
-						case 'bass':
-							pointCloud.material.color.set(new THREE.Color(bass/255, 0, 0));
-							break;
-						case 'mid':
-							pointCloud.material.color.set(new THREE.Color(0, mid/255, 0));
-							break;
-						case 'treble':
-							pointCloud.material.color.set(new THREE.Color(0, 0, treble/255));
-							break;
-					}
-				}
-
-				if(effectController.trackCamera && textMesh) {
-					textMesh.position.copy(camera.position);
-					textMesh.rotation.copy(camera.rotation);
-					textMesh.translateZ(-200);
 				}
 
 				for (let i = 0; i < particleCount; i++) {
-					if(particlesData[i]){
-						const particleData = particlesData[i];
-
-						particlePositions[i * 3] += particleData.velocity.x;
-						particlePositions[i * 3 + 1] += particleData.velocity.y;
-						particlePositions[i * 3 + 2] += particleData.velocity.z;
-
-						if (
-							particlePositions[i * 3 + 1] < -rHalf ||
-							particlePositions[i * 3 + 1] > rHalf
-						)
-							particleData.velocity.y = -particleData.velocity.y;
-
-						if (
-							particlePositions[i * 3] < -rHalf ||
-							particlePositions[i * 3] > rHalf
-						)
-							particleData.velocity.x = -particleData.velocity.x;
-
-						if (
-							particlePositions[i * 3 + 2] < -rHalf ||
-							particlePositions[i * 3 + 2] > rHalf
-						)
-							particleData.velocity.z = -particleData.velocity.z;
-
-						if (
-							effectController.limitConnections &&
-							particleData.numConnections >= effectController.maxConnections
-						)
-							continue;
-
+					const p = particlesData[i];
+					if(p) {
+						particlePositions[i*3] += p.velocity.x; particlePositions[i*3+1] += p.velocity.y; particlePositions[i*3+2] += p.velocity.z;
+						if (particlePositions[i*3+1] < -rHalf || particlePositions[i*3+1] > rHalf) p.velocity.y = -p.velocity.y;
+						if (particlePositions[i*3] < -rHalf || particlePositions[i*3] > rHalf) p.velocity.x = -p.velocity.x;
+						if (particlePositions[i*3+2] < -rHalf || particlePositions[i*3+2] > rHalf) p.velocity.z = -p.velocity.z;
+						if (effectController.limitConnections && p.numConnections >= effectController.maxConnections) continue;
 						for (let j = i + 1; j < particleCount; j++) {
-							if(particlesData[j]){
-								const particleDataB = particlesData[j];
-								if (
-									effectController.limitConnections &&
-									particleDataB.numConnections >= effectController.maxConnections
-								)
-									continue;
-
-								const dx = particlePositions[i * 3] - particlePositions[j * 3];
-								const dy =
-									particlePositions[i * 3 + 1] - particlePositions[j * 3 + 1];
-								const dz =
-									particlePositions[i * 3 + 2] - particlePositions[j * 3 + 2];
-								const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
+							const p2 = particlesData[j];
+							if(p2 && (!effectController.limitConnections || p2.numConnections < effectController.maxConnections)) {
+								const dx = particlePositions[i*3]-particlePositions[j*3], dy=particlePositions[i*3+1]-particlePositions[j*3+1], dz=particlePositions[i*3+2]-particlePositions[j*3+2];
+								const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
 								if (dist < effectController.minDistance) {
-									particleData.numConnections++;
-									particleDataB.numConnections++;
-
+									p.numConnections++; p2.numConnections++;
 									const alpha = 1.0 - dist / effectController.minDistance;
-
-									positions[vertexpos++] = particlePositions[i * 3];
-									positions[vertexpos++] = particlePositions[i * 3 + 1];
-									positions[vertexpos++] = particlePositions[i * 3 + 2];
-
-									positions[vertexpos++] = particlePositions[j * 3];
-									positions[vertexpos++] = particlePositions[j * 3 + 1];
-									positions[vertexpos++] = particlePositions[j * 3 + 2];
-
-									colors[colorpos++] = alpha;
-									colors[colorpos++] = alpha;
-									colors[colorpos++] = alpha;
-
-									colors[colorpos++] = alpha;
-									colors[colorpos++] = alpha;
-									colors[colorpos++] = alpha;
-
+									positions[vertexpos++]=particlePositions[i*3]; positions[vertexpos++]=particlePositions[i*3+1]; positions[vertexpos++]=particlePositions[i*3+2];
+									positions[vertexpos++]=particlePositions[j*3]; positions[vertexpos++]=particlePositions[j*3+1]; positions[vertexpos++]=particlePositions[j*3+2];
+									colors[colorpos++]=alpha; colors[colorpos++]=alpha; colors[colorpos++]=alpha;
+									colors[colorpos++]=alpha; colors[colorpos++]=alpha; colors[colorpos++]=alpha;
 									numConnected++;
 								}
 							}
 						}
 					}
 				}
-
 				linesMesh.geometry.setDrawRange(0, numConnected * 2);
 				linesMesh.geometry.attributes.position.needsUpdate = true;
 				linesMesh.geometry.attributes.color.needsUpdate = true;
-
 				pointCloud.geometry.attributes.position.needsUpdate = true;
-
-				requestAnimationFrame(animate);
 
 				stats.update();
 				render();
 			}
 
 			function render() {
-
 				if (analyser) {
 					const data = analyser.getFrequencyData();
 					const canvas = document.getElementById('music-display');
@@ -757,13 +557,8 @@
 					canvas.height = 100;
 					context.clearRect(0, 0, canvas.width, canvas.height);
 					context.fillStyle = 'white';
-
-					for (let i = 0; i < data.length; i++) {
-						const barHeight = data[i];
-						context.fillRect(i, canvas.height - barHeight, 1, barHeight);
-					}
+					for (let i = 0; i < data.length; i++) context.fillRect(i, canvas.height - data[i], 1, data[i]);
 				}
-
 				renderer.render(scene, camera);
 			}
 		</script>
