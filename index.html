@@ -45,6 +45,7 @@
 			const r = 1600;
 			const rHalf = r / 2;
             let originalSpaceshipMaterial, spaceshipShaderMaterial;
+            let finalColor = new THREE.Color(0xffffff);
 
             const materialUniforms = {
                 time: { value: 0 },
@@ -113,47 +114,56 @@
                 custom: { roughness: 0.5, anisotropy: 0.5, ior: 1.5, clearcoat: 0.5, dispersion: 0.1, metalColor: [0.95, 0.95, 0.98] }
             };
 
+            const colorPalettes = [
+                ['#234c6a', '#456882', '#d2c1b6', '#1b3c53'], ['#f0f8ff', '#a4c8e2', '#759bb4', '#537085'],
+                ['#0e293c', '#225377', '#3474a5', '#97b9d3'], ['#ffacac', '#ff8383', '#ff5f5f', '#ff3a3a'],
+                ['#f7f7f7', '#dcdcdc', '#c0c0c0', '#a9a9a9'], ['#f8b195', '#f67280', '#c06c84', '#6c5b7b'],
+                ['#a8e6cf', '#dcedc1', '#ffd3b6', '#ffaaa5'], ['#ffc3a0', '#ffafbd', '#c08497', '#7a7a7a'],
+                ['#2c3e50', '#34495e', '#7f8c8d', '#bdc3c7'], ['#4a4e69', '#9a8c98', '#c9ada7', '#f2e9e4'],
+                ['#e0e0e0', '#9e9e9e', '#616161', '#212121'], ['#f9d5e5', '#f6a5c0', '#f47c9e', '#f25278'],
+                ['#003f5c', '#58508d', '#bc5090', '#ff6361'], ['#f94144', '#f3722c', '#f8961e', '#f9c74f'],
+                ['#264653', '#2a9d8f', '#e9c46a', '#f4a261'], ['#e76f51', '#f4a261', '#e9c46a', '#2a9d8f'],
+                ['#1a535c', '#4ecdc4', '#f7fff7', '#ff6b6b'], ['#00a896', '#02c39a', '#f0f3bd', '#05668d'],
+                ['#3d405b', '#81b29a', '#f2cc8f', '#e07a5f'], ['#0d3b66', '#faf0ca', '#f4d35e', '#ee964b']
+            ].map(p => p.map(c => new THREE.Color(c)));
+
 			const effectController = {
 				showDots: true,
 				showLines: true,
-				minDistance: 85.55,
-				limitConnections: false,
-				maxConnections: 20,
-				particleCount: 500,
-				particleSize: 3,
-				particleColor: 0xffffff,
+				minDistance: 189.37,
+				limitConnections: true,
+				maxConnections: 24,
+				particleCount: 669,
+				particleSize: 2,
 				fillScreen: true,
-				showBox: false,
+				showBox: true,
 				openFileDialog: function() { document.getElementById('fileInput').click(); },
 				nextTrack: function() { playNext(); },
 				prevTrack: function() { playPrev(); },
 				playPause: function() { if(audioPlayer.paused) audioPlayer.play(); else audioPlayer.pause(); },
 				seek: 0,
-				bassMultiplier: 0.5,
-				midMultiplier: 0.5,
-				trebleMultiplier: 0.5,
+				bassMultiplier: 0,
+				midMultiplier: 0,
+				trebleMultiplier: 0,
 				cameraMovement: 'orbit',
-				cameraSpeed: 0.2,
+				cameraSpeed: 0.8,
 				randomness: 0.5,
-				colorMode: 'static',
-				bassColor: 0xff0000,
-				midColor: 0x00ff00,
-				trebleColor: 0x0000ff,
+                colorPalette: 16,
 				text: 'SHINE',
 				trackCamera: false,
 				textAsParticles: false,
                 preset: 'chrome',
-                roughness: 0.05,
-                anisotropy: 0.0,
-                ior: 2.4,
-                clearcoat: 0.0,
-                dispersion: 0.0,
+                roughness: 0.75,
+                anisotropy: 0.9,
+                ior: 2.69,
+                clearcoat: 0.67,
+                dispersion: 0.43,
                 lightTemperature: 6500,
 				spaceshipSpeed: 1.0,
 				spaceshipSize: 0.005,
 				spaceshipVisible: true,
                 showSpaceshipHelper: true,
-                useShaderLightingForShip: false,
+                useShaderLightingForShip: true,
 			};
 
 			let audio, analyser, audioPlayer, fileInput, seekSlider;
@@ -209,11 +219,11 @@
 				visualFolder.add(effectController, 'trebleMultiplier', 0, 2, 0.1);
 
 				const colorFolder = gui.addFolder('Colors');
-				colorFolder.add(effectController, 'colorMode', [ 'static', 'bass', 'mid', 'treble' ] ).name('Color Mode');
-				colorFolder.addColor(effectController, 'particleColor').onChange(v => pointCloud.material.color.set(v));
-				colorFolder.addColor(effectController, 'bassColor');
-				colorFolder.addColor(effectController, 'midColor');
-				colorFolder.addColor(effectController, 'trebleColor');
+                const paletteMap = {};
+                for(let i = 0; i < colorPalettes.length; i++) {
+                    paletteMap[`Palette ${i + 1}`] = i;
+                }
+                colorFolder.add(effectController, 'colorPalette', paletteMap).name('Color Palette');
 
 				const cameraFolder = gui.addFolder('Advanced Camera');
 				cameraFolder.add(effectController, 'cameraMovement', [ 'orbit', 'random', 'still', 'follow', 'flight' ] ).name('Movement');
@@ -278,7 +288,7 @@
 				positions = new Float32Array(segments * 3);
 				colors = new Float32Array(segments * 3);
 
-				const pMaterial = new THREE.PointsMaterial({ color: effectController.particleColor, size: effectController.particleSize, blending: THREE.AdditiveBlending, transparent: true, sizeAttenuation: false });
+				const pMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: effectController.particleSize, blending: THREE.AdditiveBlending, transparent: true, sizeAttenuation: false });
 				particles = new THREE.BufferGeometry();
 				particlePositions = new Float32Array(maxParticleCount * 3);
 				initParticles();
@@ -309,7 +319,6 @@
                     originalSpaceshipMaterial = new THREE.MeshBasicMaterial({ map: normalMap });
                     spaceshipShaderMaterial = customMaterial.clone();
                     spaceshipShaderMaterial.uniforms = THREE.UniformsUtils.clone(materialUniforms);
-
                     spaceshipShaderMaterial.uniforms.u_useNormalMap.value = true;
                     spaceshipShaderMaterial.uniforms.u_normalMap.value = normalMap;
                     spaceshipShaderMaterial.uniforms.metalColor.value = new THREE.Vector3(0.95, 0.95, 0.98);
@@ -357,28 +366,28 @@
 			}
 
 			function createText() {
-				if(!font) return;
-				if(textMesh) scene.remove(textMesh);
-				
+                if(!font) return;
+                if(textMesh) scene.remove(textMesh);
+
                 const textGeo = new TextGeometry( effectController.text, { font: font, size: 50, height: 5, curveSegments: 12, bevelEnabled: true, bevelThickness: 2, bevelSize: 1, bevelOffset: 0, bevelSegments: 5 } );
-				textGeo.center();
+                textGeo.center();
                 textGeo.computeVertexNormals();
 
-				if(effectController.textAsParticles) {
-					const vertices = textGeo.attributes.position.array;
-					for(let i=0; i<vertices.length; i+=3) {
-						if(particleCount < maxParticleCount) {
-							particlePositions[particleCount*3] = vertices[i]; particlePositions[particleCount*3+1] = vertices[i+1]; particlePositions[particleCount*3+2] = vertices[i+2];
-							particlesData[particleCount] = { velocity: new THREE.Vector3(-1+Math.random()*2, -1+Math.random()*2, -1+Math.random()*2), numConnections: 0 };
-							particleCount++;
-						}
-					}
-					particles.setDrawRange(0, particleCount);
-					pointCloud.geometry.attributes.position.needsUpdate = true;
-				} else {
-					textMesh = new THREE.Mesh( textGeo, customMaterial );
-					scene.add( textMesh );
-				}
+                if(effectController.textAsParticles) {
+                    const vertices = textGeo.attributes.position.array;
+                    for(let i=0; i<vertices.length; i+=3) {
+                        if(particleCount < maxParticleCount) {
+                            particlePositions[particleCount*3] = vertices[i]; particlePositions[particleCount*3+1] = vertices[i+1]; particlePositions[particleCount*3+2] = vertices[i+2];
+                            particlesData[particleCount] = { velocity: new THREE.Vector3(-1+Math.random()*2, -1+Math.random()*2, -1+Math.random()*2), numConnections: 0 };
+                            particleCount++;
+                        }
+                    }
+                    particles.setDrawRange(0, particleCount);
+                    pointCloud.geometry.attributes.position.needsUpdate = true;
+                } else {
+                    textMesh = new THREE.Mesh( textGeo, customMaterial );
+                    scene.add( textMesh );
+                }
 			}
 
 			function playTrack(trackIndex) {
@@ -474,9 +483,9 @@
 						controls.enabled = false;
 						controls.autoRotate = false;
 						if(spaceship) {
-							const offset = new THREE.Vector3(0, 20, 60); // A fixed position behind and above the ship
+							const offset = new THREE.Vector3(0, 20, 60);
 							const desiredPosition = spaceship.position.clone().add(offset.applyQuaternion(spaceship.quaternion));
-							camera.position.lerp(desiredPosition, 0.1); // Smoothly follow
+							camera.position.lerp(desiredPosition, 0.1);
 							camera.lookAt(spaceship.position);
 						}
 						break;
@@ -496,22 +505,40 @@
 				}
 
 				let vertexpos = 0, colorpos = 0, numConnected = 0;
+
 				for (let i = 0; i < particleCount; i++) if(particlesData[i]) particlesData[i].numConnections = 0;
 
 				if (analyser) {
 					const data = analyser.getFrequencyData();
-					const bass = data.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
-					const mid = data.slice(10, 20).reduce((a, b) => a + b, 0) / 10;
-					const treble = data.slice(20, 30).reduce((a, b) => a + b, 0) / 10;
-					for (let i = 0; i < particleCount; i++) {
-						if(particlesData[i]){
-							const p = particlesData[i];
-							p.velocity.x += (Math.random() - 0.5) * bass * effectController.bassMultiplier * 0.1;
-							p.velocity.y += (Math.random() - 0.5) * mid * effectController.midMultiplier * 0.1;
-							p.velocity.z += (Math.random() - 0.5) * treble * effectController.trebleMultiplier * 0.1;
-						}
-					}
+                    if (data) {
+                        const bass = data.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
+
+                        const palette = colorPalettes[effectController.colorPalette];
+                        const maxIndex = palette.length - 1;
+                        let colorIndexFloat = (bass / 150) * maxIndex;
+                        colorIndexFloat = Math.max(0, Math.min(colorIndexFloat, maxIndex));
+
+                        const colorIndex1 = Math.floor(colorIndexFloat);
+                        const colorIndex2 = Math.min(Math.ceil(colorIndexFloat), maxIndex);
+                        const lerpAmount = colorIndexFloat - colorIndex1;
+
+                        if (palette[colorIndex1] && palette[colorIndex2]) {
+                            finalColor.copy(palette[colorIndex1]);
+                            finalColor.lerp(palette[colorIndex2], lerpAmount);
+                        }
+
+                        for (let i = 0; i < particleCount; i++) {
+                            if(particlesData[i]){
+                                const p = particlesData[i];
+                                p.velocity.x += (Math.random() - 0.5) * bass * effectController.bassMultiplier * 0.1;
+                                p.velocity.y += (Math.random() - 0.5) * (data.slice(10, 20).reduce((a,b)=>a+b,0)/10) * effectController.midMultiplier * 0.1;
+                                p.velocity.z += (Math.random() - 0.5) * (data.slice(20, 30).reduce((a,b)=>a+b,0)/10) * effectController.trebleMultiplier * 0.1;
+                            }
+                        }
+                    }
 				}
+
+                pointCloud.material.color.set(finalColor);
 
 				for (let i = 0; i < particleCount; i++) {
 					const p = particlesData[i];
@@ -531,8 +558,8 @@
 									const alpha = 1.0 - dist / effectController.minDistance;
 									positions[vertexpos++]=particlePositions[i*3]; positions[vertexpos++]=particlePositions[i*3+1]; positions[vertexpos++]=particlePositions[i*3+2];
 									positions[vertexpos++]=particlePositions[j*3]; positions[vertexpos++]=particlePositions[j*3+1]; positions[vertexpos++]=particlePositions[j*3+2];
-									colors[colorpos++]=alpha; colors[colorpos++]=alpha; colors[colorpos++]=alpha;
-									colors[colorpos++]=alpha; colors[colorpos++]=alpha; colors[colorpos++]=alpha;
+									colors[colorpos++]=finalColor.r * alpha; colors[colorpos++]=finalColor.g * alpha; colors[colorpos++]=finalColor.b * alpha;
+									colors[colorpos++]=finalColor.r * alpha; colors[colorpos++]=finalColor.g * alpha; colors[colorpos++]=finalColor.b * alpha;
 									numConnected++;
 								}
 							}
